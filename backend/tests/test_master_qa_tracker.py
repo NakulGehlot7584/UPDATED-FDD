@@ -148,18 +148,36 @@ class TestPhase5FDDExecutionWeatherReadiness:
 
     def test_issue_32_missing_weather_table_skips_rules_explicitly(self):
         """Issue 32: Weather rules with missing weather table must return SKIPPED_MISSING_ROLES rather than false healthy NO_FAULT."""
-        dm = DatasetManager()
-        f2 = Path("test_data/F2_AHU02_North.csv")
-        ds_info = dm.add_csv(f2)
-        dm.ingest_to_historian(ds_info.dataset_id, "F2_AHU02_North")
-        executor = RuleExecutor()
-        summary = executor.execute_rules_for_equipment(equipment_id="F2_AHU02_North")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("timestamp,sat,mat,rat,oat,clg_valve_pct,fan_cmd\n")
+            f.write("2026-07-01 12:00:00Z,55.0,65.0,72.0,85.0,50.0,1.0\n")
+            f.write("2026-07-01 12:05:00Z,56.0,66.0,72.0,86.0,55.0,1.0\n")
+            temp_path = Path(f.name)
 
-        wx_rules = [r for r in summary.results if r.rule_id in ("ECON-3", "ECON-6", "ECON-7", "OAT-METEO")]
-        assert len(wx_rules) > 0
-        for r in wx_rules:
-            assert r.status == RuleExecutionStatus.SKIPPED_MISSING_ROLES
-            assert len(r.missing_roles) > 0
+        with tempfile.TemporaryDirectory() as temp_hist_dir:
+            from app.historian.storage import HistorianStorage
+            from app.historian.service import HistorianService
+            hist_storage = HistorianStorage(root_dir=temp_hist_dir)
+            hist_service = HistorianService(storage=hist_storage)
+            dm = DatasetManager(historian=hist_service)
+            try:
+                ds_info = dm.add_csv(temp_path)
+                dm.ingest_to_historian(
+                    ds_info.dataset_id,
+                    building_id="DEFAULT_BUILDING",
+                    default_equipment_id="TEST_AHU_SYNTHETIC",
+                )
+                executor = RuleExecutor(storage=hist_storage)
+                summary = executor.execute_rules_for_equipment(equipment_id="TEST_AHU_SYNTHETIC")
+
+                wx_rules = [r for r in summary.results if r.rule_id in ("ECON-3", "ECON-6", "ECON-7", "OAT-METEO")]
+                assert len(wx_rules) > 0
+                for r in wx_rules:
+                    assert r.status == RuleExecutionStatus.SKIPPED_MISSING_ROLES
+                    assert len(r.missing_roles) > 0
+            finally:
+                dm.remove_dataset(ds_info.dataset_id)
+                temp_path.unlink(missing_ok=True)
 
 
 class TestPhase6DiagnosticsDecoupling:

@@ -402,7 +402,7 @@ export const TelemetryGraph: React.FC<Props> = ({ data, height = 360 }) => {
             />
           ))}
 
-          {/* Fault Episode Highlight Boxes (D:\csvopenfdd Plotly style) */}
+          {/* Fault Episode Highlight Boxes (Open-FDD Plotly style) */}
           {data.fault_episodes.map((ep, i) => {
             const x0 = getTimeX(ep.start);
             const x1 = getTimeX(ep.end);

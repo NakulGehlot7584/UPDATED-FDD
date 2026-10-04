@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: open-fdd-backend
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: CORS_ORIGINS
+        sync: false
+      - key: OPENFDD_UPLOAD_DIR
+        value: /var/data/uploads
+      - key: OPENFDD_STORAGE_DIR
+        value: /var/data/historian
+      - key: OPENFDD_PARQUET_ROOT
+        value: /var/data/historian
+    disk:
+      name: fdd-data
+      mountPath: /var/data
+      sizeGB: 10

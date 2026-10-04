@@ -11,7 +11,7 @@ Design Principles:
 2. Safe Partition Token Sanitization: Prevents directory traversal attacks (`..`, `/`, `\\`).
 3. Crash-Safe Atomic Publication: Writes parquet output to a hidden `.history.parquet.tmp-<pid>`
    file, flushes/syncs, then atomically renames to `history.parquet`.
-4. Configurable Root: Defaults to `D:/fdd/data/historian` or `OPENFDD_PARQUET_ROOT` environment variable.
+4. Configurable Root: Defaults to project `data/historian` or `OPENFDD_PARQUET_ROOT` environment variable.
 """
 
 from __future__ import annotations

@@ -261,7 +261,7 @@ export const FDDResultsView: React.FC<Props> = ({
     document.body.removeChild(link);
   };
 
-  // Airside table columns to display below Airside graph matching D:\csvopenfdd
+  // Airside table columns to display below Airside graph matching Open-FDD standard
   const airsideCols = useMemo(() => {
     const candidates = [
       'timestamp',
@@ -616,7 +616,7 @@ export const FDDResultsView: React.FC<Props> = ({
                   <TelemetryGraph data={airsideGraphData} height={380} />
                 </div>
 
-                {/* Airside Telemetry Data Table matching D:\csvopenfdd */}
+                {/* Airside Telemetry Data Table matching Open-FDD standard */}
                 {airsideCols.length > 0 && normalizedRecords.length > 0 && (
                   <div className="space-y-2 pt-2">
                     <span className="text-xs font-semibold text-[#fafafa] block font-mono">

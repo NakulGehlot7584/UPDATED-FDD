@@ -461,7 +461,7 @@ def build_rule_graph(
             if cand in [k.lower() for k in data.keys()] and cand not in relevant_roles:
                 relevant_roles.append(cand)
 
-    # Key contextual telemetry channels matching D:\csvopenfdd and canonical role schema
+    # Key contextual telemetry channels matching Open-FDD standard and canonical role schema
     context_roles = [
         "sat", "sat_sp", "rat", "mat", "oa_t", "oat",
         "duct_static", "duct_static_sp", "fan_cmd", "fan_status", "fan_vfd_speed",
