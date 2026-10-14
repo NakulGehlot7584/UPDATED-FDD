@@ -116,7 +116,7 @@ export const DatasetManagement: React.FC<DatasetManagementProps> = ({
       {/* Streamlit st.file_uploader widget */}
       <div className="space-y-1.5">
         <label className="text-sm font-semibold text-[#fafafa] block">
-          Upload multi-point or enteliWEB CSV(s)
+          Upload CSV
         </label>
         <div
           onDragOver={handleDragOver}

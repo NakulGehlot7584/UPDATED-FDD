@@ -53,6 +53,17 @@ class DataFusionEngine:
         """Register an in-memory PyArrow Table."""
         if self.table_exists(table_name):
             self.deregister_table(table_name)
+
+        # Defensive type coercion: cast boolean telemetry status fields to float64
+        # to ensure DataFusion SQL comparison operations (e.g. fan_status > 0.05) succeed
+        cast_fields = []
+        for i, field in enumerate(arrow_table.schema):
+            if field.type == pa.bool_() and field.name not in ("timestamp_utc", "equipment_id"):
+                cast_fields.append((field.name, arrow_table.column(i).cast(pa.float64())))
+            else:
+                cast_fields.append((field.name, arrow_table.column(i)))
+        if cast_fields:
+            arrow_table = pa.Table.from_arrays([c[1] for c in cast_fields], names=[c[0] for c in cast_fields])
         
         batches = arrow_table.to_batches()
         if not batches:

@@ -127,6 +127,9 @@ export interface FaultEpisode {
   samples: number;
   duration_hours: number;
   summary?: string | null;
+  sensor_name?: string | null;
+  canonical_role?: string | null;
+  original_column?: string | null;
 }
 
 export interface FaultEvidence {
@@ -134,27 +137,6 @@ export interface FaultEvidence {
   confidence: string;
   observed_values: Record<string, any>;
   missing_context_roles: string[];
-}
-
-export interface SensorFaultDetail {
-  sensor_name: string;
-  canonical_role: string;
-  source_column?: string | null;
-  original_column?: string | null;
-  error_type: string;
-  condition_detected?: string | null;
-  fault_start?: string | null;
-  fault_end?: string | null;
-  duration_hours?: number | null;
-  observed_value?: number | null;
-  unit?: string | null;
-  engineering_unit?: string | null;
-  expected_range?: string | null;
-  sensor_role_type?: string;
-  role_type?: string;
-  interval_available?: boolean;
-  notes?: string | null;
-  interval_note?: string | null;
 }
 
 export interface FaultDetailRecord {
@@ -173,7 +155,6 @@ export interface FaultDetailRecord {
   sample_count: number;
   episode_count: number;
   episodes: FaultEpisode[];
-  sensors?: SensorFaultDetail[];
   evidence: FaultEvidence[];
   possible_causes: string[];
   recommended_checks: string[];
@@ -195,7 +176,6 @@ export interface RuleFinding {
   raw_fault_count?: number | null;
   metrics: Record<string, any>;
   episodes: FaultEpisode[];
-  sensors?: SensorFaultDetail[];
   detail?: FaultDetailRecord | null;
 }
 

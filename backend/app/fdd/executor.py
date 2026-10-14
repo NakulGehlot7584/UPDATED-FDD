@@ -12,14 +12,14 @@ from app.fdd.catalog import RuleCatalog, get_rule_catalog
 from app.fdd.engine import DataFusionEngine, create_engine
 from app.fdd.models import (
     FDDExecutionSummary,
+    FaultEpisode,
     RuleDefinition,
     RuleExecutionResult,
     RuleExecutionStatus,
     RuleFinding,
 )
-from app.fdd.attribution import resolve_sensor_attributions
 from app.fdd.diagnostics import build_grounded_diagnostic
-from app.fdd.episodes import extract_fault_episodes
+from app.fdd.episodes import FLATLINE_ROLE_DISPLAY_NAMES, extract_fault_episodes
 from app.historian.storage import HistorianStorage
 
 # Official Open-FDD standard default parameters
@@ -47,27 +47,6 @@ DEFAULT_SQL_PARAMS: Dict[str, str] = {
     "DUCT_HIGH_MARGIN": "0.25",
     "PRESSURE_ON_MIN": "0.2",
     "ALWAYS_ON_PCT": "0.95",
-    "EPS_MAT": "1.15",
-    "EPS_SAT": "1.15",
-    "EPS_OAT": "1.15",
-    "EPS_RAT": "1.15",
-    "EPS_CCLT": "1.15",
-    "EPS_CCET": "1.15",
-    "EPS_HCLT": "1.15",
-    "EPS_HCET": "1.15",
-    "MIX_TOL": "1.15",
-    "DELTA_SUPPLY_FAN": "0.55",
-    "CLG_INACTIVE_MAX": "0.1",
-    "ECON_MIN_POS": "0.05",
-    "ECON_FULL_OPEN": "0.9",
-    "CLG_ON_MIN": "0.1",
-    "HTG_ON_MIN": "0.1",
-    "FAN_ON_MIN": "0.01",
-    "MODE_DELAY_MIN": "10",
-    "STARTUP_DELAY_MIN": "0",
-    "REQUIRE_OPERATIONAL_GATE": "1.0",
-    "MINIMUM_ACTIVE_COVERAGE_PCT": "5.0",
-    "UTIL_PCT_ERR": "15.0",
 }
 
 
@@ -134,6 +113,8 @@ def inject_optional_roles_cte(
 
     missing = [r for r in optional_roles if r.lower() not in available_columns]
     if not missing:
+        if table_name != "history":
+            return re.sub(r"\bFROM\s+history\b", f"FROM {table_name}", sql, flags=re.IGNORECASE)
         return sql
 
     null_projections = []
@@ -144,8 +125,8 @@ def inject_optional_roles_cte(
     null_cols_str = ", ".join(null_projections)
     cte = f"history_opt AS (SELECT {table_name}.*, {null_cols_str} FROM {table_name})"
 
-    # Replace references to FROM history with FROM history_opt
-    rewritten = re.sub(rf"\bFROM\s+{table_name}\b", "FROM history_opt", sql, flags=re.IGNORECASE)
+    # Replace references to FROM history or FROM {table_name} with FROM history_opt
+    rewritten = re.sub(rf"\bFROM\s+(?:history|{re.escape(table_name)})\b", "FROM history_opt", sql, flags=re.IGNORECASE)
 
     # Look for SQL WITH keyword on its own line / not inside a comment
     lines = rewritten.splitlines()
@@ -475,17 +456,17 @@ class RuleExecutor:
                                 stat_sql = (
                                     prepared_sql[:idx_final]
                                     + f"conf_ts AS (SELECT timestamp_utc FROM ranked WHERE raw_fault = 1 AND streak_len >= {confirm_rows}) "
-                                    + f"SELECT {', '.join(stat_exprs)} FROM history WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts)"
+                                    + f"SELECT {', '.join(stat_exprs)} FROM {table_name} WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts)"
                                 )
                             elif idx_final != -1 and "grp2" in prepared_sql.lower() and timestamps:
                                 stat_sql = (
                                     prepared_sql[:idx_final]
                                     + f"conf_ts AS (SELECT timestamp_utc FROM grp2 WHERE sustained_fault = 1 "
                                     + f"AND ROW_NUMBER() OVER (PARTITION BY equipment_id, streak2 ORDER BY timestamp_utc) >= {confirm_rows}) "
-                                    + f"SELECT {', '.join(stat_exprs)} FROM history WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts)"
+                                    + f"SELECT {', '.join(stat_exprs)} FROM {table_name} WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts)"
                                 )
                             else:
-                                stat_sql = f"SELECT {', '.join(stat_exprs)} FROM history"
+                                stat_sql = f"SELECT {', '.join(stat_exprs)} FROM {table_name}"
                             stat_res = self.engine.query_to_dicts(stat_sql)
                             if stat_res:
                                 for r in stat_roles:
@@ -493,36 +474,46 @@ class RuleExecutor:
                                     if mean_v is not None:
                                         telemetry_summary[r] = {"mean": float(mean_v)}
 
-                        # For sensor validation rules, identify specific faulted sensor roles
+                        # For sensor validation rules, identify specific faulted sensor roles and per-sensor episodes
                         if rule_def.rule_id in ("SV-FLATLINE", "SV-STALE") and "win" in prepared_sql.lower() and timestamps and idx_final != -1:
                             sens = ["oa_t", "mat", "zone_t", "rat", "sat", "chw_supply_t", "chw_return_t", "hw_supply_t", "hw_return_t", "oa_h"]
                             rows_req = used_params.get("FLATLINE_ROWS" if rule_def.rule_id == "SV-FLATLINE" else "STALE_ROWS", "4")
                             tol = used_params.get("FLATLINE_TOL" if rule_def.rule_id == "SV-FLATLINE" else "STALE_TOL", "0.01")
-                            sens_exprs = [f"MAX(CASE WHEN n_{s} >= {rows_req} AND span_{s} <= {tol} THEN 1 ELSE 0 END) AS flat_{s}" for s in sens if s in available_cols]
-                            if sens_exprs:
+                            active_sens = [s for s in sens if s in available_cols]
+                            if active_sens:
+                                sens_cases = [f"CASE WHEN n_{s} >= {rows_req} AND span_{s} <= {tol} THEN 1 ELSE 0 END AS flat_{s}" for s in active_sens]
                                 q_sens = (
                                     prepared_sql[:idx_final]
                                     + f"conf_ts AS (SELECT timestamp_utc FROM ranked WHERE raw_fault = 1 AND streak_len >= {confirm_rows}) "
-                                    + f"SELECT {', '.join(sens_exprs)} FROM win WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts)"
+                                    + f"SELECT timestamp_utc, {', '.join(sens_cases)} FROM win WHERE timestamp_utc IN (SELECT timestamp_utc FROM conf_ts) ORDER BY timestamp_utc"
                                 )
                                 res_s = self.engine.query_to_dicts(q_sens)
                                 if res_s:
-                                    faulted_s = [s for s in sens if s in available_cols and res_s[0].get(f"flat_{s}") == 1]
+                                    per_sensor_episodes: List[FaultEpisode] = []
+                                    faulted_s = []
+                                    for s in active_sens:
+                                        s_ts = [r["timestamp_utc"] for r in res_s if r.get(f"flat_{s}") == 1 and "timestamp_utc" in r]
+                                        if s_ts:
+                                            faulted_s.append(s)
+                                            disp_name = FLATLINE_ROLE_DISPLAY_NAMES.get(s, s.replace("_", " ").title())
+                                            orig_col = (column_mappings or {}).get(s, s)
+                                            _, s_eps = extract_fault_episodes(
+                                                s_ts,
+                                                poll_seconds=poll_seconds,
+                                                equipment_prefix=f"{eq_id}_{s}",
+                                                sensor_name=disp_name,
+                                                canonical_role=s,
+                                                original_column=orig_col,
+                                            )
+                                            per_sensor_episodes.extend(s_eps)
+
                                     if faulted_s:
                                         telemetry_summary["faulted_sensors"] = faulted_s
+                                    if per_sensor_episodes:
+                                        per_sensor_episodes.sort(key=lambda ep: ep.start)
+                                        episodes = per_sensor_episodes
                     except Exception:
                         pass
-
-                    sensors = resolve_sensor_attributions(
-                        rule_def=rule_def,
-                        equipment_id=eq_id,
-                        episodes=episodes,
-                        telemetry_summary=telemetry_summary,
-                        column_mappings=column_mappings or {},
-                        available_roles=available_cols,
-                        engine=self.engine,
-                        poll_seconds=poll_seconds,
-                    )
 
                     detail = build_grounded_diagnostic(
                         rule_id=rule_def.rule_id,
@@ -534,10 +525,7 @@ class RuleExecutor:
                         available_roles=available_cols,
                         rule_def=rule_def,
                         raw_sample_count=raw_count,
-                        sensors=sensors,
                     )
-                else:
-                    sensors = []
 
                 desc = rule_def.description
                 if fault_detected and fault_hours is not None:
@@ -557,7 +545,6 @@ class RuleExecutor:
                     raw_fault_count=raw_count,
                     metrics=row,
                     episodes=episodes,
-                    sensors=sensors,
                     detail=detail,
                 )
                 findings.append(finding)
@@ -577,14 +564,13 @@ class RuleExecutor:
             err_msg = str(e)
             err_lower = err_msg.lower()
 
-            # Open-FDD parity: missing weather or utility tables or missing column schema is a skip
-            if ("weather" in err_lower or "utility" in err_lower) and "not found" in err_lower:
-                missing_role = "utility" if "utility" in err_lower else "weather"
+            # Open-FDD parity: missing weather table or missing column schema is a skip
+            if "weather" in err_lower and "not found" in err_lower:
                 return RuleExecutionResult(
                     rule_id=rule_def.rule_id,
                     status=RuleExecutionStatus.SKIPPED_MISSING_ROLES,
                     elapsed_ms=elapsed,
-                    missing_roles=[missing_role],
+                    missing_roles=["weather"],
                     findings=[],
                 )
             if "no field named" in err_lower or ("column" in err_lower and "not found" in err_lower):
@@ -685,6 +671,7 @@ class RuleExecutor:
             # a fake null table that causes silent false negatives. Allow DataFusion to raise
             # table 'weather' not found, which is classified as SKIPPED_MISSING_ROLES (Issue 32).
 
+        # Extract metadata and telemetry roles for equipment scoping
         source_file = None
         column_mappings: Dict[str, str] = {}
         meta_file = None

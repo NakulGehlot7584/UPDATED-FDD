@@ -14,6 +14,21 @@ import pandas as pd
 from app.fdd.models import FaultEpisode
 
 
+# Standard display names for HVAC sensor validation flatline roles
+FLATLINE_ROLE_DISPLAY_NAMES: Dict[str, str] = {
+    "mat": "Mixed Air Temperature",
+    "sat": "Supply Air Temperature",
+    "oa_t": "Outdoor Air Temperature",
+    "rat": "Return Air Temperature",
+    "zone_t": "Zone Temperature",
+    "chw_supply_t": "Chilled Water Supply Temperature",
+    "chw_return_t": "Chilled Water Return Temperature",
+    "hw_supply_t": "Hot Water Supply Temperature",
+    "hw_return_t": "Hot Water Return Temperature",
+    "oa_h": "Outdoor Air Relative Humidity",
+}
+
+
 def parse_timestamp(ts: Union[datetime, pd.Timestamp, str, int, float]) -> datetime:
     """Parse various timestamp representations into timezone-aware or UTC datetime."""
     if isinstance(ts, pd.Timestamp):
@@ -27,6 +42,9 @@ def extract_fault_episodes(
     timestamps: Sequence[Union[datetime, pd.Timestamp, str, int, float]],
     poll_seconds: float = 300.0,
     equipment_prefix: Optional[str] = None,
+    sensor_name: Optional[str] = None,
+    canonical_role: Optional[str] = None,
+    original_column: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[FaultEpisode]]:
     """Segment an array of fault timestamps into contiguous FaultEpisodes.
 
@@ -38,6 +56,12 @@ def extract_fault_episodes(
         Sampling interval in seconds (default: 300.0 = 5 min).
     equipment_prefix : Optional[str]
         Optional prefix for episode IDs.
+    sensor_name : Optional[str]
+        Human-readable name of the specific sensor responsible for this episode.
+    canonical_role : Optional[str]
+        Canonical sensor role (e.g. 'mat', 'sat').
+    original_column : Optional[str]
+        Original CSV column name from the uploaded dataset.
 
     Returns
     -------
@@ -72,12 +96,28 @@ def extract_fault_episodes(
             curr_samples.append(curr)
         else:
             # Finalize previous episode
-            ep = _create_episode(curr_samples, poll_seconds, len(episodes) + 1, equipment_prefix)
+            ep = _create_episode(
+                curr_samples,
+                poll_seconds,
+                len(episodes) + 1,
+                equipment_prefix,
+                sensor_name=sensor_name,
+                canonical_role=canonical_role,
+                original_column=original_column,
+            )
             episodes.append(ep)
             curr_samples = [curr]
 
     if curr_samples:
-        ep = _create_episode(curr_samples, poll_seconds, len(episodes) + 1, equipment_prefix)
+        ep = _create_episode(
+            curr_samples,
+            poll_seconds,
+            len(episodes) + 1,
+            equipment_prefix,
+            sensor_name=sensor_name,
+            canonical_role=canonical_role,
+            original_column=original_column,
+        )
         episodes.append(ep)
 
     total_fault_hours = round(sum(e.duration_hours for e in episodes), 4)
@@ -101,6 +141,9 @@ def _create_episode(
     poll_seconds: float,
     index: int,
     equipment_prefix: Optional[str] = None,
+    sensor_name: Optional[str] = None,
+    canonical_role: Optional[str] = None,
+    original_column: Optional[str] = None,
 ) -> FaultEpisode:
     """Create a single FaultEpisode record from a list of contiguous samples."""
     start_dt = samples[0]
@@ -125,4 +168,7 @@ def _create_episode(
         samples=count,
         duration_hours=duration_hours,
         summary=summary,
+        sensor_name=sensor_name,
+        canonical_role=canonical_role,
+        original_column=original_column,
     )

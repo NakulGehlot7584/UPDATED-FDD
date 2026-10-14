@@ -13,7 +13,6 @@ from app.fdd.models import (
     FaultEpisode,
     FaultEvidence,
     RuleDefinition,
-    SensorFaultDetail,
 )
 
 # Canonical role alias mapping to normalize shorthand names to roles.py
@@ -718,7 +717,6 @@ def build_grounded_diagnostic(
     available_roles: Optional[Set[str]] = None,
     rule_def: Optional[RuleDefinition] = None,
     raw_sample_count: Optional[int] = None,
-    sensors: Optional[List[SensorFaultDetail]] = None,
 ) -> FaultDetailRecord:
     """Build an enriched, grounded FaultDetailRecord with evidence and confidence scoring.
 
@@ -1004,7 +1002,6 @@ def build_grounded_diagnostic(
         raw_sample_count=raw_sample_count if raw_sample_count is not None else row_metrics.get("raw_count"),
         episode_count=episode_count,
         episodes=fault_eps,
-        sensors=sensors or [],
         evidence=evidence_list,
         possible_causes=possible_causes,
         recommended_checks=recommended_checks,
