@@ -20,7 +20,7 @@ rates AS (
   SELECT
     equipment_id,
     timestamp_utc,
-    CAST(EXTRACT(EPOCH FROM (timestamp_utc - prev_ts)) AS DOUBLE) / 3600.0 AS dt_hours,
+    CAST(EXTRACT(EPOCH FROM (CAST(timestamp_utc AS TIMESTAMP) - CAST(prev_ts AS TIMESTAMP))) AS DOUBLE) / 3600.0 AS dt_hours,
     oa_t - prev_oa_t AS d_oa_t,
     mat - prev_mat AS d_mat,
     zone_t - prev_zone_t AS d_zone_t,
@@ -35,7 +35,7 @@ flagged AS (
     timestamp_utc,
     CAST(CASE
       WHEN prev_ts IS NULL THEN 0
-      WHEN CAST(EXTRACT(EPOCH FROM (timestamp_utc - prev_ts)) AS DOUBLE) > {{MAX_GAP_HOURS}} * 3600.0 THEN 0
+      WHEN CAST(EXTRACT(EPOCH FROM (CAST(timestamp_utc AS TIMESTAMP) - CAST(prev_ts AS TIMESTAMP))) AS DOUBLE) > {{MAX_GAP_HOURS}} * 3600.0 THEN 0
       WHEN dt_hours IS NULL OR dt_hours <= 0.0 THEN 0
       WHEN ABS(d_oa_t) / dt_hours > ({{STEADY_FAULT_PER_HOUR}} * {{SENSOR_SPAN}} / 100.0) THEN 1
       WHEN ABS(d_mat) / dt_hours > ({{STEADY_FAULT_PER_HOUR}} * {{SENSOR_SPAN}} / 100.0) THEN 1

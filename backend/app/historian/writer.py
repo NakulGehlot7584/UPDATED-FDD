@@ -166,6 +166,13 @@ def write_canonical_telemetry_to_historian(
         if sampling_interval is None or sampling_interval <= 0:
             sampling_interval = 300.0
 
+        # Extract column mappings from canonical schema
+        col_mappings: dict[str, str] = {}
+        if hasattr(canonical_result, "schema") and canonical_result.schema:
+            for f in canonical_result.schema.telemetry_fields:
+                if f.role and f.source_column:
+                    col_mappings[f.role] = f.source_column
+
         # Write sidecar metadata
         meta = HistorianSidecarMeta(
             building_id=building_id,
@@ -181,6 +188,7 @@ def write_canonical_telemetry_to_historian(
             telemetry_roles=telemetry_roles,
             generated_at=datetime.now(timezone.utc).isoformat(),
             sampling_interval_seconds=float(sampling_interval),
+            column_mappings=col_mappings,
         )
         meta.write_to(meta_path)
         written_meta.append(meta)

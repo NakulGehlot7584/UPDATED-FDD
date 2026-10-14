@@ -29,7 +29,13 @@ def scan_csv(file_path: str | Path) -> dict:
     except OSError as e:
         raise ValueError(f"Failed to read '{path.name}': {e}")
 
-    df = pl.read_csv(path)
+    try:
+        df = pl.read_csv(path)
+    except pl.exceptions.NoDataError:
+        raise ValueError(f"CSV file '{path.name}' contains no data rows (empty or header-only).")
+    except Exception as e:
+        raise ValueError(f"Failed to parse CSV '{path.name}': {e}")
+
     if df.height == 0:
         raise ValueError(f"CSV file '{path.name}' contains no data rows (empty or header-only).")
     if df.width == 0:

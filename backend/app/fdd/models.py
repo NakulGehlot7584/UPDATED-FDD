@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RuleExecutionStatus(str, Enum):
@@ -54,6 +54,57 @@ class RuleDefinition(BaseModel):
     sql_template: Optional[str] = None
 
 
+class SensorFaultDetail(BaseModel):
+    """Detailed fault association for an individual sensor within a finding."""
+    sensor_name: str
+    canonical_role: str
+    source_column: Optional[str] = None
+    original_column: Optional[str] = None
+    error_type: str = "Fault detected"
+    condition_detected: Optional[str] = None
+    fault_start: Optional[str] = None
+    fault_end: Optional[str] = None
+    duration_hours: Optional[float] = None
+    observed_value: Optional[float] = None
+    unit: Optional[str] = None
+    engineering_unit: Optional[str] = None
+    expected_range: Optional[str] = None
+    sensor_role_type: str = "primary"  # "primary" | "reference_setpoint" | "control_command" | "participating_equipment"
+    role_type: Optional[str] = None
+    interval_available: bool = True
+    notes: Optional[str] = None
+    interval_note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def sync_aliases(self) -> SensorFaultDetail:
+        if self.original_column is None and self.source_column is not None:
+            self.original_column = self.source_column
+        elif self.source_column is None and self.original_column is not None:
+            self.source_column = self.original_column
+
+        if self.condition_detected is None and self.error_type is not None:
+            self.condition_detected = self.error_type
+        elif self.error_type is None and self.condition_detected is not None:
+            self.error_type = self.condition_detected
+
+        if self.engineering_unit is None and self.unit is not None:
+            self.engineering_unit = self.unit
+        elif self.unit is None and self.engineering_unit is not None:
+            self.unit = self.engineering_unit
+
+        if self.role_type is None and self.sensor_role_type is not None:
+            self.role_type = self.sensor_role_type
+        elif self.sensor_role_type is None and self.role_type is not None:
+            self.sensor_role_type = self.role_type
+
+        if self.interval_note is None and self.notes is not None:
+            self.interval_note = self.notes
+        elif self.notes is None and self.interval_note is not None:
+            self.notes = self.interval_note
+
+        return self
+
+
 class RuleFinding(BaseModel):
     """Individual fault detection finding for an equipment entity."""
     equipment_id: str
@@ -69,6 +120,7 @@ class RuleFinding(BaseModel):
     raw_fault_count: Optional[int] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
     episodes: List[FaultEpisode] = Field(default_factory=list)
+    sensors: List[SensorFaultDetail] = Field(default_factory=list)
     detail: Optional[FaultDetailRecord] = None
 
 
@@ -102,7 +154,7 @@ class FDDExecutionSummary(BaseModel):
     building_id: Optional[str] = None
     equipment_id: Optional[str] = None
     equipment_kind: Optional[str] = None
-    total_catalog_rules: int = 66
+    total_catalog_rules: int = 77
     applicable_rules: int = 0
     non_applicable_rules: int = 0
     total_rules_evaluated: int = 0
@@ -152,6 +204,7 @@ class FaultDetailRecord(BaseModel):
     raw_sample_count: Optional[int] = None
     episode_count: int = 0
     episodes: List[FaultEpisode] = Field(default_factory=list)
+    sensors: List[SensorFaultDetail] = Field(default_factory=list)
     evidence: List[FaultEvidence] = Field(default_factory=list)
     possible_causes: List[str] = Field(default_factory=list)
     recommended_checks: List[str] = Field(default_factory=list)
@@ -247,5 +300,10 @@ class ResultValidationReport(BaseModel):
     rules_table: List[Dict[str, Any]] = Field(default_factory=list)
     findings_table: List[Dict[str, Any]] = Field(default_factory=list)
     reconciliation_table: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+RuleFinding.model_rebuild()
+FaultDetailRecord.model_rebuild()
+
 
 

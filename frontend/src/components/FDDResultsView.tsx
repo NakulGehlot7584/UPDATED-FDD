@@ -3,12 +3,17 @@ import {
   Download,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Table,
+  Activity,
+  Info,
 } from 'lucide-react';
 import {
   FDDExecutionSummary,
   FaultDetailRecord,
   GraphPayload,
+  FaultTimelinePayload,
+  SensorFaultDetail,
 } from '../types/api';
 import {
   getEquipmentFaults,
@@ -16,8 +21,11 @@ import {
   getRuleGraph,
   getHistorianEquipmentTelemetry,
   getNormalizedDataDownloadUrl,
+  getFaultTimeline,
 } from '../services/api';
 import { TelemetryGraph } from './TelemetryGraph';
+import { FaultTimelineGraph } from './FaultTimelineGraph';
+import { ResultValidationSection } from './ResultValidationSection';
 
 interface Props {
   summary: FDDExecutionSummary;
@@ -43,6 +51,8 @@ export const FDDResultsView: React.FC<Props> = ({
   const [airsideGraphData, setAirsideGraphData] = useState<GraphPayload | null>(null);
   const [chwGraphData, setChwGraphData] = useState<GraphPayload | null>(null);
   const [isEpisodesExpanded, setIsEpisodesExpanded] = useState<boolean>(false);
+  const [expandedRuleIds, setExpandedRuleIds] = useState<Set<string>>(new Set());
+  const [timelineData, setTimelineData] = useState<FaultTimelinePayload | null>(null);
 
   // Normalized sensor data state
   const [normalizedRecords, setNormalizedRecords] = useState<Record<string, any>[]>([]);
@@ -76,7 +86,7 @@ export const FDDResultsView: React.FC<Props> = ({
     return eqList.length > 0 ? eqList : [equipmentId];
   }, [eqList, equipmentId]);
 
-  // Grouped findings from execution summary
+  // Grouped findings from execution summary with preserved sensor attributions
   const findingsList = useMemo(() => {
     const list: Array<{
       equipment_id: string;
@@ -89,6 +99,7 @@ export const FDDResultsView: React.FC<Props> = ({
       first_seen?: string;
       last_seen?: string;
       detail?: FaultDetailRecord;
+      sensors: SensorFaultDetail[];
       display_label: string;
     }> = [];
 
@@ -114,6 +125,7 @@ export const FDDResultsView: React.FC<Props> = ({
             first_seen: f.episodes && f.episodes.length > 0 ? f.episodes[0].start : undefined,
             last_seen: f.episodes && f.episodes.length > 0 ? f.episodes[f.episodes.length - 1].end : undefined,
             detail: f.detail || undefined,
+            sensors: (f.sensors && f.sensors.length > 0) ? f.sensors : (f.detail?.sensors || []),
             display_label: `${codeVal} — ${nameVal}`,
           });
         }
@@ -128,6 +140,36 @@ export const FDDResultsView: React.FC<Props> = ({
       (f) => f.equipment_id.toLowerCase() === effectiveEquipmentId.toLowerCase()
     );
   }, [findingsList, effectiveEquipmentId]);
+
+  // Expand / collapse handlers
+  const toggleExpandRule = (ruleId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedRuleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(ruleId)) {
+        next.delete(ruleId);
+      } else {
+        next.add(ruleId);
+      }
+      return next;
+    });
+  };
+
+  const expandAllRules = () => {
+    const all = new Set(filteredFindings.map((f) => f.rule_id));
+    setExpandedRuleIds(all);
+  };
+
+  const collapseAllRules = () => {
+    setExpandedRuleIds(new Set());
+  };
+
+  const getSensorsForFinding = (f: typeof findingsList[0]): SensorFaultDetail[] => {
+    if (f.sensors && f.sensors.length > 0) return f.sensors;
+    if (f.detail?.sensors && f.detail.sensors.length > 0) return f.detail.sensors;
+    const match = faultDetails.find((d) => d.rule_id.toLowerCase() === f.rule_id.toLowerCase());
+    return match?.sensors || [];
+  };
 
   // Auto-select first fault rule if none selected
   useEffect(() => {
@@ -146,7 +188,24 @@ export const FDDResultsView: React.FC<Props> = ({
     setTempGraphData(null);
     setAirsideGraphData(null);
     setChwGraphData(null);
+    setTimelineData(null);
+    setExpandedRuleIds(new Set());
   }, [effectiveEquipmentId]);
+
+  // Fetch fault timeline for effective equipment
+  useEffect(() => {
+    const loadTimeline = async () => {
+      if (!effectiveEquipmentId) return;
+      try {
+        const tl = await getFaultTimeline(effectiveEquipmentId, buildingId);
+        setTimelineData(tl);
+      } catch (e) {
+        console.warn('Failed to load fault timeline:', e);
+        setTimelineData(null);
+      }
+    };
+    loadTimeline();
+  }, [effectiveEquipmentId, buildingId, summary]);
 
   // Fetch fault details for effective equipment
   useEffect(() => {
@@ -231,6 +290,21 @@ export const FDDResultsView: React.FC<Props> = ({
     const findMatch = filteredFindings.find((f) => f.rule_id.toLowerCase() === selectedRuleId.toLowerCase());
     return findMatch?.detail || null;
   }, [selectedRuleId, faultDetails, filteredFindings]);
+
+  // Associated sensors for the selected fault record
+  const inspectedSensors = useMemo(() => {
+    if (!selectedDetail && !selectedRuleId) return [];
+    if (selectedDetail?.sensors && selectedDetail.sensors.length > 0) {
+      return selectedDetail.sensors;
+    }
+    const matchFinding = filteredFindings.find(
+      (f) => f.rule_id.toLowerCase() === (selectedRuleId || selectedDetail?.rule_id || '').toLowerCase()
+    );
+    if (matchFinding?.sensors && matchFinding.sensors.length > 0) {
+      return matchFinding.sensors;
+    }
+    return [];
+  }, [selectedDetail, selectedRuleId, filteredFindings]);
 
   // CSV Export handler matching st.download_button
   const handleDownloadCSV = () => {
@@ -355,21 +429,57 @@ export const FDDResultsView: React.FC<Props> = ({
         {/* TAB 1: FAULTS & DIAGNOSTICS */}
         {activeTab === 'faults' && (
           <div className="space-y-4">
+            {/* Fault Episode Timeline Swimlanes */}
+            {timelineData && (
+              <div className="space-y-2">
+                <FaultTimelineGraph
+                  timeline={timelineData}
+                  onSelectRule={(ruleId) => setSelectedRuleId(ruleId)}
+                  selectedRuleId={selectedRuleId}
+                />
+              </div>
+            )}
+
             {/* Fault Summary Table matching st.dataframe */}
             <div className="space-y-2">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-xs font-medium text-[#a3a8b8]">
-                  Detected Fault Summary ({filteredFindings.length} active fault findings)
-                </span>
-                <button
-                  type="button"
-                  id="download-diagnostic-csv-btn"
-                  onClick={handleDownloadCSV}
-                  className="st-button-secondary text-xs px-2.5 py-1 flex items-center gap-1.5 self-start sm:self-auto"
-                >
-                  <Download className="w-3.5 h-3.5 text-[#58a6ff]" />
-                  Download diagnostic CSV
-                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-[#a3a8b8]">
+                    Detected Fault Summary ({filteredFindings.length} active fault findings)
+                  </span>
+                  <span className="text-[11px] text-[#58a6ff] bg-[#161b22] px-2 py-0.5 rounded border border-[rgba(88,166,255,0.2)]">
+                    Click chevron to inspect associated sensors
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={expandAllRules}
+                    className="st-button-secondary text-xs px-2.5 py-1 flex items-center gap-1 hover:text-[#58a6ff]"
+                    title="Expand all sensor details"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5 text-[#58a6ff]" />
+                    Expand all sensors
+                  </button>
+                  <button
+                    type="button"
+                    onClick={collapseAllRules}
+                    className="st-button-secondary text-xs px-2.5 py-1 flex items-center gap-1 hover:text-[#a3a8b8]"
+                    title="Collapse all sensor details"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5 text-[#a3a8b8]" />
+                    Collapse all
+                  </button>
+                  <button
+                    type="button"
+                    id="download-diagnostic-csv-btn"
+                    onClick={handleDownloadCSV}
+                    className="st-button-secondary text-xs px-2.5 py-1 flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#58a6ff]" />
+                    Download diagnostic CSV
+                  </button>
+                </div>
               </div>
 
               {filteredFindings.length === 0 ? (
@@ -377,10 +487,11 @@ export const FDDResultsView: React.FC<Props> = ({
                   ✓ No persistent faults were detected for the active selection.
                 </div>
               ) : (
-                <div className="st-dataframe-container max-h-64 overflow-auto">
-                  <table id="faults-detected-table" className="st-dataframe-table font-mono text-xs">
+                <div className="st-dataframe-container max-h-96 overflow-auto border border-[rgba(250,250,250,0.12)] rounded">
+                  <table id="faults-detected-table" className="st-dataframe-table font-mono text-xs w-full">
                     <thead>
                       <tr>
+                        <th className="w-8 text-center"></th>
                         <th>Fault Code</th>
                         <th>Fault Name</th>
                         <th>Samples</th>
@@ -393,28 +504,170 @@ export const FDDResultsView: React.FC<Props> = ({
                     <tbody>
                       {filteredFindings.map((f) => {
                         const isSelected = selectedRuleId?.toLowerCase() === f.rule_id.toLowerCase();
+                        const isExpanded = expandedRuleIds.has(f.rule_id);
+                        const findingSensors = getSensorsForFinding(f);
                         const formatFullTimestamp = (ts?: string) => {
                           if (!ts) return '--';
                           return ts.replace('T', ' ');
                         };
                         return (
-                          <tr
-                            key={`${f.equipment_id}_${f.rule_id}`}
-                            onClick={() => setSelectedRuleId(f.rule_id)}
-                            className={`cursor-pointer ${isSelected ? 'bg-[#262730] font-semibold' : ''}`}
-                          >
-                            <td className="text-[#58a6ff] font-bold">{f.rule_id}</td>
-                            <td className="text-[#fafafa] font-sans">{f.fault_name}</td>
-                            <td>{f.samples}</td>
-                            <td>{f.episodes}</td>
-                            <td className="text-[#ff7b72] font-bold">{f.total_duration_hours.toFixed(1)}</td>
-                            <td className="text-[#a3a8b8] whitespace-nowrap">
-                              {formatFullTimestamp(f.first_seen)}
-                            </td>
-                            <td className="text-[#a3a8b8] whitespace-nowrap">
-                              {formatFullTimestamp(f.last_seen)}
-                            </td>
-                          </tr>
+                          <React.Fragment key={`${f.equipment_id}_${f.rule_id}`}>
+                            <tr
+                              onClick={() => setSelectedRuleId(f.rule_id)}
+                              className={`cursor-pointer transition-colors ${
+                                isSelected ? 'bg-[#262730] font-semibold' : 'hover:bg-[#1a1c23]'
+                              }`}
+                            >
+                              <td
+                                className="text-center px-1 py-2 text-[#a3a8b8] hover:text-[#58a6ff] cursor-pointer"
+                                onClick={(e) => toggleExpandRule(f.rule_id, e)}
+                                title={isExpanded ? 'Collapse sensor breakdown' : 'Expand sensor breakdown'}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-4 h-4 inline-block text-[#58a6ff]" />
+                                ) : (
+                                  <ChevronRight className="w-4 h-4 inline-block" />
+                                )}
+                              </td>
+                              <td className="text-[#58a6ff] font-bold">{f.rule_id}</td>
+                              <td className="text-[#fafafa] font-sans">
+                                <div className="flex items-center gap-2">
+                                  <span>{f.fault_name}</span>
+                                  {findingSensors.length > 0 && (
+                                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#21262d] text-[#8b949e] border border-[rgba(250,250,250,0.08)]">
+                                      {findingSensors.length} sensor{findingSensors.length > 1 ? 's' : ''}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td>{f.samples}</td>
+                              <td>{f.episodes}</td>
+                              <td className="text-[#ff7b72] font-bold">{f.total_duration_hours.toFixed(1)}</td>
+                              <td className="text-[#a3a8b8] whitespace-nowrap">
+                                {formatFullTimestamp(f.first_seen)}
+                              </td>
+                              <td className="text-[#a3a8b8] whitespace-nowrap">
+                                {formatFullTimestamp(f.last_seen)}
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-[#12151c] border-b border-[rgba(250,250,250,0.1)]">
+                                <td colSpan={8} className="p-3 pl-8">
+                                  <div className="rounded border border-[rgba(250,250,250,0.12)] bg-[#1e222b] p-3 shadow-inner space-y-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(250,250,250,0.08)] pb-2">
+                                      <div className="flex items-center gap-2">
+                                        <Activity className="w-4 h-4 text-[#58a6ff]" />
+                                        <span className="text-xs font-bold text-[#fafafa] font-mono tracking-wide">
+                                          ASSOCIATED SENSORS & TELEMETRY BREAKDOWN — {f.rule_id}
+                                        </span>
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[rgba(88,166,255,0.15)] text-[#58a6ff] border border-[rgba(88,166,255,0.3)]">
+                                          {findingSensors.length} {findingSensors.length === 1 ? 'Sensor Point' : 'Sensor Points'}
+                                        </span>
+                                      </div>
+                                      <span className="text-[11px] text-[#a3a8b8] font-sans">
+                                        Equipment: <strong className="text-[#fafafa] font-mono">{f.equipment_id}</strong>
+                                      </span>
+                                    </div>
+
+                                    {findingSensors.length === 0 ? (
+                                      <div className="p-3 text-xs text-[#a3a8b8] italic bg-[#161b22] rounded border border-[rgba(250,250,250,0.06)] flex items-center gap-2">
+                                        <Info className="w-4 h-4 text-[#a3a8b8] shrink-0" />
+                                        <span>Sensor attribution unavailable: Equipment-level finding without isolated single-sensor telemetry point.</span>
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-left font-mono text-xs border-collapse">
+                                          <thead>
+                                            <tr className="border-b border-[rgba(250,250,250,0.08)] text-[11px] text-[#a3a8b8] uppercase">
+                                              <th className="py-1.5 px-2">Sensor Name</th>
+                                              <th className="py-1.5 px-2">Canonical Role</th>
+                                              <th className="py-1.5 px-2">Original CSV Column</th>
+                                              <th className="py-1.5 px-2">Role Type / Detected Condition</th>
+                                              <th className="py-1.5 px-2">Fault Interval</th>
+                                              <th className="py-1.5 px-2">Duration</th>
+                                              <th className="py-1.5 px-2 text-right">Observed Value</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-[rgba(250,250,250,0.05)]">
+                                            {findingSensors.map((s, idx) => (
+                                              <tr key={`${s.canonical_role}_${idx}`} className="hover:bg-[rgba(255,255,255,0.02)]">
+                                                <td className="py-2 px-2 font-sans font-medium text-[#fafafa] whitespace-nowrap">
+                                                  {s.sensor_name || s.canonical_role}
+                                                </td>
+                                                <td className="py-2 px-2 whitespace-nowrap">
+                                                  <span className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-[#21262d] text-[#58a6ff] border border-[rgba(88,166,255,0.25)]">
+                                                    {s.canonical_role}
+                                                  </span>
+                                                </td>
+                                                <td className="py-2 px-2 whitespace-nowrap">
+                                                  <code className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-[#161b22] text-[#7ee787] border border-[rgba(126,231,135,0.25)]">
+                                                    {s.original_column || '—'}
+                                                  </code>
+                                                </td>
+                                                <td className="py-2 px-2 font-sans text-xs">
+                                                  <div className="flex flex-wrap items-center gap-1.5">
+                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase font-semibold ${
+                                                      s.role_type === 'primary' ? 'bg-[rgba(255,75,75,0.15)] text-[#ff7b72] border border-[#ff4b4b]' :
+                                                      s.role_type === 'reference_setpoint' ? 'bg-[rgba(210,153,34,0.15)] text-[#d29922] border border-[rgba(210,153,34,0.4)]' :
+                                                      s.role_type === 'control_command' ? 'bg-[rgba(187,128,255,0.15)] text-[#d2a8ff] border border-[rgba(187,128,255,0.4)]' :
+                                                      'bg-[rgba(88,166,255,0.1)] text-[#79c0ff] border border-[rgba(88,166,255,0.2)]'
+                                                    }`}>
+                                                      {(s.role_type || s.sensor_role_type || 'primary').replace('_', ' ')}
+                                                    </span>
+                                                    <span className="text-[#e6edf3]">{s.condition_detected || s.error_type}</span>
+                                                  </div>
+                                                </td>
+                                                <td className="py-2 px-2 whitespace-nowrap">
+                                                  {s.interval_available && s.fault_start ? (
+                                                    <span className="text-[#fafafa] font-mono text-[11px]">
+                                                      {s.fault_start.replace('T', ' ')} → {s.fault_end ? s.fault_end.replace('T', ' ') : 'Present'}
+                                                    </span>
+                                                  ) : (
+                                                    <span className="text-[#8b949e] italic text-[11px]">
+                                                      Individual sensor interval unavailable
+                                                    </span>
+                                                  )}
+                                                  {s.interval_note && (
+                                                    <div className="text-[10px] text-[#8b949e] italic">{s.interval_note}</div>
+                                                  )}
+                                                </td>
+                                                <td className="py-2 px-2 whitespace-nowrap">
+                                                  {s.interval_available && s.duration_hours !== null && s.duration_hours !== undefined ? (
+                                                    <span className="text-[#ff7b72] font-bold">
+                                                      {s.duration_hours.toFixed(2)} hrs
+                                                    </span>
+                                                  ) : (
+                                                    <span className="text-[#8b949e]">--</span>
+                                                  )}
+                                                </td>
+                                                <td className="py-2 px-2 text-right whitespace-nowrap">
+                                                  {s.observed_value !== null && s.observed_value !== undefined ? (
+                                                    <div>
+                                                      <span className="text-[#fafafa] font-bold">
+                                                        {typeof s.observed_value === 'number' ? s.observed_value.toFixed(2) : s.observed_value}
+                                                      </span>
+                                                      {s.engineering_unit && (
+                                                        <span className="text-[#8b949e] ml-1 text-[11px]">{s.engineering_unit}</span>
+                                                      )}
+                                                      {s.expected_range && (
+                                                        <div className="text-[10px] text-[#8b949e]">Range: {s.expected_range}</div>
+                                                      )}
+                                                    </div>
+                                                  ) : (
+                                                    <span className="text-[#8b949e]">--</span>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
@@ -523,6 +776,93 @@ export const FDDResultsView: React.FC<Props> = ({
                       )}
                     </ul>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Associated Sensors Breakdown for Inspected Fault */}
+            {selectedDetail && (
+              <div className="st-expander mt-3">
+                <div className="p-3 bg-[#1e2129] rounded-lg border border-[rgba(250,250,250,0.12)]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(250,250,250,0.08)] pb-2.5 mb-3">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-[#58a6ff]" />
+                      <h4 className="text-sm font-semibold text-[#fafafa] font-mono">
+                        Associated Sensors & Telemetry Points ({inspectedSensors.length} attributed)
+                      </h4>
+                    </div>
+                    <span className="text-[11px] text-[#a3a8b8] font-mono">
+                      Rule: <strong className="text-[#58a6ff]">{selectedDetail.rule_id}</strong> | Equipment: <strong className="text-[#fafafa]">{effectiveEquipmentId}</strong>
+                    </span>
+                  </div>
+
+                  {inspectedSensors.length === 0 ? (
+                    <div className="text-xs text-[#a3a8b8] italic p-3 bg-[#161b22] rounded border border-[rgba(250,250,250,0.08)] flex items-center gap-2">
+                      <Info className="w-4 h-4 text-[#a3a8b8] shrink-0" />
+                      <span>Sensor attribution unavailable: Equipment-level fault without isolated single-sensor telemetry point.</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {inspectedSensors.map((s, idx) => (
+                        <div key={`${s.canonical_role}_${idx}`} className="bg-[#161b22] border border-[rgba(250,250,250,0.1)] rounded p-3 space-y-2">
+                          <div className="flex items-start justify-between gap-1">
+                            <div>
+                              <h5 className="text-xs font-bold text-[#fafafa] font-sans">{s.sensor_name || s.canonical_role}</h5>
+                              <span className="text-[10px] font-mono text-[#58a6ff]">{s.canonical_role}</span>
+                            </div>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono uppercase font-semibold ${
+                              s.role_type === 'primary' ? 'bg-[rgba(255,75,75,0.15)] text-[#ff7b72] border border-[#ff4b4b]' :
+                              s.role_type === 'reference_setpoint' ? 'bg-[rgba(210,153,34,0.15)] text-[#d29922] border border-[rgba(210,153,34,0.4)]' :
+                              s.role_type === 'control_command' ? 'bg-[rgba(187,128,255,0.15)] text-[#d2a8ff] border border-[rgba(187,128,255,0.4)]' :
+                              'bg-[rgba(88,166,255,0.1)] text-[#79c0ff] border border-[rgba(88,166,255,0.2)]'
+                            }`}>
+                              {(s.role_type || s.sensor_role_type || 'primary').replace('_', ' ')}
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono text-[#a3a8b8] space-y-1 border-t border-[rgba(250,250,250,0.06)] pt-1.5">
+                            <div className="flex justify-between">
+                              <span>Original CSV:</span>
+                              <code className="text-[#7ee787] bg-[#21262d] px-1 py-0.5 rounded">{s.original_column || '—'}</code>
+                            </div>
+                            {s.observed_value !== null && s.observed_value !== undefined && (
+                              <div className="flex justify-between">
+                                <span>Observed:</span>
+                                <span className="text-[#fafafa] font-bold">
+                                  {typeof s.observed_value === 'number' ? s.observed_value.toFixed(2) : s.observed_value} {s.engineering_unit || ''}
+                                </span>
+                              </div>
+                            )}
+                            {s.expected_range && (
+                              <div className="flex justify-between">
+                                <span>Expected Range:</span>
+                                <span className="text-[#fafafa]">{s.expected_range}</span>
+                              </div>
+                            )}
+                            <div className="flex flex-col gap-0.5 pt-1 border-t border-[rgba(250,250,250,0.05)]">
+                              <span className="text-[10px] text-[#a3a8b8]">Condition:</span>
+                              <span className="text-xs text-[#fafafa] font-sans">{s.condition_detected}</span>
+                            </div>
+                            <div className="flex flex-col gap-0.5 pt-1">
+                              <span className="text-[10px] text-[#a3a8b8]">Fault Interval:</span>
+                              {s.interval_available && s.fault_start ? (
+                                <span className="text-[10px] text-[#fafafa] font-mono">
+                                  {s.fault_start.replace('T', ' ')} → {s.fault_end ? s.fault_end.replace('T', ' ') : 'Present'}
+                                  {s.duration_hours !== null && s.duration_hours !== undefined ? ` (${s.duration_hours.toFixed(1)} hrs)` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-[#8b949e] italic">
+                                  Individual sensor interval unavailable
+                                </span>
+                              )}
+                              {s.interval_note && (
+                                <span className="text-[9px] text-[#8b949e] italic">{s.interval_note}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -702,6 +1042,11 @@ export const FDDResultsView: React.FC<Props> = ({
           <Download className="w-3.5 h-3.5" />
           Download Normalized Data
         </a>
+      </div>
+
+      {/* Result Validation & Verification Section */}
+      <div className="pt-2">
+        <ResultValidationSection equipmentId={effectiveEquipmentId} buildingId={buildingId} />
       </div>
     </div>
   );

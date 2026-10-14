@@ -17,6 +17,7 @@ from app.fdd.models import (
     RuleExecutionStatus,
     RuleFinding,
 )
+from app.fdd.attribution import resolve_sensor_attributions
 from app.fdd.diagnostics import build_grounded_diagnostic
 from app.fdd.episodes import extract_fault_episodes
 from app.historian.storage import HistorianStorage
@@ -46,6 +47,27 @@ DEFAULT_SQL_PARAMS: Dict[str, str] = {
     "DUCT_HIGH_MARGIN": "0.25",
     "PRESSURE_ON_MIN": "0.2",
     "ALWAYS_ON_PCT": "0.95",
+    "EPS_MAT": "1.15",
+    "EPS_SAT": "1.15",
+    "EPS_OAT": "1.15",
+    "EPS_RAT": "1.15",
+    "EPS_CCLT": "1.15",
+    "EPS_CCET": "1.15",
+    "EPS_HCLT": "1.15",
+    "EPS_HCET": "1.15",
+    "MIX_TOL": "1.15",
+    "DELTA_SUPPLY_FAN": "0.55",
+    "CLG_INACTIVE_MAX": "0.1",
+    "ECON_MIN_POS": "0.05",
+    "ECON_FULL_OPEN": "0.9",
+    "CLG_ON_MIN": "0.1",
+    "HTG_ON_MIN": "0.1",
+    "FAN_ON_MIN": "0.01",
+    "MODE_DELAY_MIN": "10",
+    "STARTUP_DELAY_MIN": "0",
+    "REQUIRE_OPERATIONAL_GATE": "1.0",
+    "MINIMUM_ACTIVE_COVERAGE_PCT": "5.0",
+    "UTIL_PCT_ERR": "15.0",
 }
 
 
@@ -298,6 +320,7 @@ class RuleExecutor:
         parameter_overrides: Optional[Dict[str, float]] = None,
         equipment_filter: Optional[str] = None,
         building_id: Optional[str] = None,
+        column_mappings: Optional[Dict[str, str]] = None,
     ) -> RuleExecutionResult:
         """Execute a single rule against registered DataFusion table."""
         rule_def = self.catalog.get_rule(rule_identifier)
@@ -490,6 +513,17 @@ class RuleExecutor:
                     except Exception:
                         pass
 
+                    sensors = resolve_sensor_attributions(
+                        rule_def=rule_def,
+                        equipment_id=eq_id,
+                        episodes=episodes,
+                        telemetry_summary=telemetry_summary,
+                        column_mappings=column_mappings or {},
+                        available_roles=available_cols,
+                        engine=self.engine,
+                        poll_seconds=poll_seconds,
+                    )
+
                     detail = build_grounded_diagnostic(
                         rule_id=rule_def.rule_id,
                         equipment_id=eq_id,
@@ -500,7 +534,10 @@ class RuleExecutor:
                         available_roles=available_cols,
                         rule_def=rule_def,
                         raw_sample_count=raw_count,
+                        sensors=sensors,
                     )
+                else:
+                    sensors = []
 
                 desc = rule_def.description
                 if fault_detected and fault_hours is not None:
@@ -520,6 +557,7 @@ class RuleExecutor:
                     raw_fault_count=raw_count,
                     metrics=row,
                     episodes=episodes,
+                    sensors=sensors,
                     detail=detail,
                 )
                 findings.append(finding)
@@ -539,13 +577,14 @@ class RuleExecutor:
             err_msg = str(e)
             err_lower = err_msg.lower()
 
-            # Open-FDD parity: missing weather table or missing column schema is a skip
-            if "weather" in err_lower and "not found" in err_lower:
+            # Open-FDD parity: missing weather or utility tables or missing column schema is a skip
+            if ("weather" in err_lower or "utility" in err_lower) and "not found" in err_lower:
+                missing_role = "utility" if "utility" in err_lower else "weather"
                 return RuleExecutionResult(
                     rule_id=rule_def.rule_id,
                     status=RuleExecutionStatus.SKIPPED_MISSING_ROLES,
                     elapsed_ms=elapsed,
-                    missing_roles=["weather"],
+                    missing_roles=[missing_role],
                     findings=[],
                 )
             if "no field named" in err_lower or ("column" in err_lower and "not found" in err_lower):
@@ -646,8 +685,8 @@ class RuleExecutor:
             # a fake null table that causes silent false negatives. Allow DataFusion to raise
             # table 'weather' not found, which is classified as SKIPPED_MISSING_ROLES (Issue 32).
 
-        # Extract metadata and telemetry roles for equipment scoping
         source_file = None
+        column_mappings: Dict[str, str] = {}
         meta_file = None
         meta_candidates = [
             parquet_path.parent / ".history.parquet.meta.json",
@@ -667,6 +706,7 @@ class RuleExecutor:
                 with open(meta_file, "r", encoding="utf-8") as mf:
                     m = json.load(mf)
                     source_file = m.get("source_file")
+                    column_mappings = m.get("column_mappings", {})
             except Exception:
                 pass
 
@@ -751,6 +791,7 @@ class RuleExecutor:
                 parameter_overrides=overrides if overrides else None,
                 equipment_filter=equipment_id,
                 building_id=building,
+                column_mappings=column_mappings,
             )
             results.append(res)
             if res.status == RuleExecutionStatus.FAULT_DETECTED:

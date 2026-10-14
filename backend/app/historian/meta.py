@@ -64,6 +64,7 @@ class HistorianSidecarMeta:
     telemetry_roles: list[str]
     generated_at: str
     sampling_interval_seconds: float = 300.0
+    column_mappings: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -84,6 +85,7 @@ class HistorianSidecarMeta:
             telemetry_roles=data.get("telemetry_roles", []),
             generated_at=data.get("generated_at", datetime.now(timezone.utc).isoformat()),
             sampling_interval_seconds=float(data.get("sampling_interval_seconds", 300.0)),
+            column_mappings=data.get("column_mappings", {}),
         )
 
     def write_to(self, path: Path) -> None:
